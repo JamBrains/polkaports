@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -ex
+
 linux_tag=v6.15
 linux_url=https://github.com/torvalds/linux
 libunwind_tag=v1.8.2
@@ -57,17 +59,24 @@ musl_build() {
 	run env \
 		CFLAGS="-Wno-shift-op-parentheses -Wno-unused-command-line-argument -fpic -fPIE -mrelax --target=riscv64-unknown-none-elf -march=rv64emac_zbb_xtheadcondmov -mabi=lp64e -ggdb" \
 		CC="$CC" \
+		CXX="$CXX" \
+		LD="$LLD" \
 		AR="$AR" \
+		AS="$AS" \
+		NM="$NM" \
 		RANLIB="$RANLIB" \
+		STRIP="$STRIP" \
+		OBJDUMP="$OBJDUMP" \
+		OBJCOPY="$OBJCOPY" \
 		LIBCC="$PWD"/libclang_rt.builtins-riscv64.a \
 		LDFLAGS="-Wl,--emit-relocs -Wl,--no-relax" \
 		./configure \
 		--prefix="$sysroot" \
 		--target=riscv64 \
-		--enable-wrapper=clang \
+		--enable-wrapper=clang-20 \
 		--disable-shared
 	run make clean
-	run make -j
+	run make -j4
 	run make install
 }
 
@@ -134,7 +143,7 @@ libunwind_install() {
 		--disable-nto \
 		--disable-setjmp \
 		--host riscv64-pc-linux-musl
-	run make -j
+	run make -j4
 	run make install
 	cd "$root"
 }
@@ -221,7 +230,7 @@ main() {
 		run_single "$1"
 		exit 0
 	fi
-	for suffix in polkavm corevm; do
+	for suffix in polkavm; do
 		sysroot="$root"/sysroot-"$suffix"
 		sysroot_init
 		polkatool_install
@@ -231,8 +240,8 @@ main() {
 		esac
 		musl_build
 		musl_install
-		linux_install
-		libunwind_install
+		#linux_install
+		#libunwind_install
 	done
 	cat <<'EOF'
 

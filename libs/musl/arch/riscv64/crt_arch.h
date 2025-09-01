@@ -8,7 +8,4 @@ __asm__(
 "tail " START "_c"
 );
 
-#include "polkavm_guest.h"
-
-void _pvm_start(long * p);
-POLKAVM_EXPORT(void, _pvm_start, long);
+extern void _pvm_start(long * p);
