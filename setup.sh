@@ -31,7 +31,7 @@ cleanup() {
 }
 
 polkatool_install() {
-	cargo install --quiet --root "$sysroot" polkatool
+	cargo install --root "$sysroot" polkatool --git https://github.com/ggwpez/polkavm --branch oty-service-sdk --no-default-features
 }
 
 picoalloc_build() {
