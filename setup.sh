@@ -32,6 +32,10 @@ polkatool_install() {
 	cargo install --quiet --root "$sysroot" polkatool
 }
 
+jam_program_blob_install() {
+	cargo install --quiet --root "$sysroot" jam-program-blob
+}
+
 picoalloc_build() {
 	suffix="$1"
 	shift
@@ -40,12 +44,13 @@ picoalloc_build() {
 	fi
 	cd "$workdir"/picoalloc
 	rm -rf target
+    target_json="$("$sysroot"/bin/polkatool get-target-json-path)"
 	RUSTC_BOOTSTRAP=1 cargo build \
 		-Zbuild-std=core,alloc \
 		--quiet \
 		--package picoalloc_native \
 		--release \
-		--target="$root"/sdk/riscv64emac-unknown-none-polkavm.json \
+		--target="$target_json" \
 		"$@"
 	mv -v target/riscv64emac-unknown-none-polkavm/release/libpicoalloc_native.a \
 		libpicoalloc_native"$suffix".a
@@ -225,6 +230,7 @@ main() {
 		sysroot="$root"/sysroot-"$suffix"
 		sysroot_init
 		polkatool_install
+		jam_program_blob_install
 		case "$suffix" in
 		polkavm) picoalloc_build polkavm ;;
 		corevm) picoalloc_build corevm --features corevm ;;
