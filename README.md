@@ -13,9 +13,9 @@ to build applications that use the `musl` port.
 
 ```bash
 
-# Build the toolchain for `polkavm` or `corevm`.
+# Build the toolchain for `polkavm` and `corevm`.
 # Tested with `clang-19` and `clang-20`.
-env CC=clang CXX=clang++ LLD=lld ./setup.sh corevm
+env CC=clang CXX=clang++ LLD=lld ./setup.sh
 
 # Activate (setup environment variables) for the toolchain.
 # Either `polkavm` or `corevm`.
@@ -28,4 +28,13 @@ env CC=clang CXX=clang++ LLD=lld ./setup.sh corevm
 ```bash
 cd apps/quake
 make -j
+```
+
+
+## How to run the application
+
+```bash
+jamt vm new quake.corevm 10000000000
+corevm-builder SERVICE_ID
+corevm-monitor SERVICE_ID
 ```

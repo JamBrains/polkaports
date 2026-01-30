@@ -8,6 +8,7 @@ libunwind_tag=v1.8.2
 libunwind_url=https://github.com/libunwind/libunwind
 picoalloc_tag=v5.2.0
 picoalloc_url=https://github.com/koute/picoalloc
+polkatool_version=0.29.0
 
 CC="${CC:-clang}"
 CXX="${CXX:-clang++}"
@@ -31,7 +32,11 @@ cleanup() {
 }
 
 polkatool_install() {
-	cargo install --root "$sysroot" polkatool --git https://github.com/ggwpez/polkavm --branch oty-service-sdk --no-default-features
+	cargo install --quiet --root "$sysroot" polkatool@$polkatool_version
+}
+
+jam_program_blob_install() {
+	cargo install --quiet --root "$sysroot" jam-program-blob
 }
 
 picoalloc_build() {
@@ -42,12 +47,13 @@ picoalloc_build() {
 	fi
 	cd "$workdir"/picoalloc
 	rm -rf target
+    target_json="$("$sysroot"/bin/polkatool get-target-json-path)"
 	RUSTC_BOOTSTRAP=1 cargo build \
 		-Zbuild-std=core,alloc \
 		--quiet \
 		--package picoalloc_native \
 		--release \
-		--target="$root"/sdk/riscv64emac-unknown-none-polkavm.json \
+		--target="$target_json" \
 		"$@"
 	mv -v target/riscv64emac-unknown-none-polkavm/release/libpicoalloc_native.a \
 		libpicoalloc_native"$suffix".a
@@ -234,6 +240,7 @@ main() {
 		sysroot="$root"/sysroot-"$suffix"
 		sysroot_init
 		polkatool_install
+		jam_program_blob_install
 		case "$suffix" in
 		polkavm) picoalloc_build polkavm ;;
 		corevm) picoalloc_build corevm --features corevm ;;
