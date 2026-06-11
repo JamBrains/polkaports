@@ -6,8 +6,8 @@ linux_tag=v6.15
 linux_url=https://github.com/torvalds/linux
 picoalloc_tag=v5.2.0
 picoalloc_url=https://github.com/koute/picoalloc
-polkatool_version=0.29.0
-jam_program_blob_version=0.1.26
+polkatool_version=0.34.0
+jam_program_blob_version=0.1.28
 llvm_tag=llvmorg-22.1.0
 llvm_url=https://github.com/llvm/llvm-project
 
@@ -42,12 +42,12 @@ cleanup() {
 
 polkatool_install() {
 	env RUSTFLAGS="$repro_rustflags" \
-		cargo install --quiet --root "$sysroot" "$@" polkatool@$polkatool_version
+		cargo install --quiet --root "$sysroot" "$@" polkatool@$polkatool_version --locked
 }
 
 jam_program_blob_install() {
 	env RUSTFLAGS="$repro_rustflags" \
-		cargo install --quiet --root "$sysroot" "$@" jam-program-blob@$jam_program_blob_version
+		cargo install --quiet --root "$sysroot" "$@" jam-program-blob@$jam_program_blob_version --locked
 }
 
 picoalloc_build() {
@@ -162,7 +162,10 @@ libunwind_install() {
 linux_install() {
 	git clone --depth=1 --branch="$linux_tag" "$linux_url" "$workdir"/linux
 	cd "$workdir"/linux
-	run make headers_install ARCH=riscv CONFIG_ARCH_RV64I=y INSTALL_HDR_PATH="$sysroot"
+	# Put the sysroot's GNU sed forwarder (see setup_sed) ahead of the BSD
+	# sed on macOS, which the kernel's headers_install.sh can't use.
+	run env PATH="$sysroot/bin:$PATH" \
+		make headers_install ARCH=riscv CONFIG_ARCH_RV64I=y INSTALL_HDR_PATH="$sysroot"
 	cd "$root"
 }
 
@@ -231,6 +234,25 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_C_COMPILER_WORKS 1)
 set(CMAKE_CXX_COMPILER_WORKS 1)
 EOF
+}
+
+setup_sed() {
+	# macOS ships BSD sed, but the Linux headers install relies on GNU sed
+	# extensions. Forward `sed` to GNU sed through the sysroot bin, the same
+	# way we forward the compiler and linker.
+	if sed --version >/dev/null 2>&1; then
+		gnu_sed="$(command -v sed)"
+	elif command -v gsed >/dev/null 2>&1; then
+		gnu_sed="$(command -v gsed)"
+	else
+		echo "error: GNU sed is required. On macOS install it with: brew install gnu-sed" >&2
+		return 1
+	fi
+	cat >"$sysroot"/bin/sed <<EOF
+#!/bin/sh
+exec "\${COREVM_SED:-$gnu_sed}" "\$@"
+EOF
+	chmod +x "$sysroot"/bin/sed
 }
 
 libcxx_install() {
@@ -343,6 +365,7 @@ main() {
 	fi
 	sysroot="$root"/sysroot
 	sysroot_init
+	setup_sed
 	if test -n "$TOOLS_RUST_TARGET"; then
 		polkatool_install --target "$TOOLS_RUST_TARGET"
 		jam_program_blob_install --target "$TOOLS_RUST_TARGET"

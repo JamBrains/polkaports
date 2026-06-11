@@ -8,7 +8,7 @@ long _syscall_polkavm(long n, long a, long b, long c, long d, long e, long f)
     return pvm_syscall(n, a, b, c, d, e, f);
 }
 
-static uintptr_t dtv[1] = { 0 };
+static uintptr_t dtv = 0;
 
 static struct pthread tls = {
     .tid = 1,

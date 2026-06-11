@@ -10,7 +10,7 @@ main() {
 	build_busybox
 	build_rust_apps
 	build_c_apps
-	build_cxx_apps
+	#build_cxx_apps
 }
 
 build_quake() {
