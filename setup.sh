@@ -120,45 +120,6 @@ musl_install() {
 	done
 }
 
-libunwind_install() {
-	rm -rf "$workdir"/libunwind
-	git clone --depth=1 --branch="$libunwind_tag" --quiet "$libunwind_url" "$workdir"/libunwind
-	cp "$root"/sdk/stdatomic.h "$sysroot"/include
-	cd "$workdir"/libunwind
-	autoreconf -vif
-	# Disable floating point registers.
-	sed -i -e '/.*error.*Unsupported RISC-V floating-point length.*/d' src/riscv/asm.h
-	sed -i -e 's/.*error.*Unsupported RISC-V floating-point size.*/typedef struct {} unw_tdep_fpreg_t;/' include/libunwind-riscv.h
-	sed -i -e 's/.*error.*FIXME.*/return 0;/' include/tdep-riscv/libunwind_i.h
-	sed -i -e '/.*fpval.*=.*/d' src/riscv/Ginit.c
-	sed -i -e 's/.*error.*Unsupported RISC-V floating point ABI.*/#define JB_MASK_SAVED (208>>3)\n#define JB_MASK (216>>3)/' include/tdep-riscv/jmpbuf.h
-	# Disable s2-s11 registers.
-	for i in 2 3 4 5 6 7 8 9 10 11; do
-		sed -i -e "/.*STORE s$i,.*/d" src/riscv/getcontext.S
-		sed -i -e "/.*LOAD s$i,.*/d" src/riscv/setcontext.S
-	done
-	# Disable a6-a7 registers.
-	for i in 6 7; do
-		sed -i -e "/.*STORE a$i,.*/d" src/riscv/getcontext.S
-		sed -i -e "/.*LOAD a$i,.*/d" src/riscv/setcontext.S
-	done
-	run env CC="$sysroot"/bin/polkavm-cc \
-		LLD="$sysroot"/bin/polkavm-cc \
-		CPPFLAGS="-D__linux__" \
-		./configure \
-		--prefix="$sysroot" \
-		--disable-shared \
-		--disable-tests \
-		--disable-coredump \
-		--disable-ptrace \
-		--disable-nto \
-		--disable-setjmp \
-		--host riscv64-pc-linux-musl
-	run make -j4
-	run make install
-	cd "$root"
-}
-
 linux_install() {
 	git clone --depth=1 --branch="$linux_tag" "$linux_url" "$workdir"/linux
 	cd "$workdir"/linux
