@@ -8,4 +8,8 @@ __asm__(
 "tail " START "_c"
 );
 
-extern void _pvm_start(long * p);
+#include "polkavm_guest.h"
+
+// Export the entry point, else polkatool prunes the program as unreachable.
+void _pvm_start(long * p);
+POLKAVM_EXPORT(void, _pvm_start, long);
