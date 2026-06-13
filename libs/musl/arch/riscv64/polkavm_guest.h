@@ -184,6 +184,22 @@ static arg_return_ty __attribute__ ((naked)) fn_name(POLKAVM_IMPORT_ARGS_IMPL(__
     ); \
 }
 
+// Weak, overridable POLKAVM_IMPORT (__weak__ not `weak`: musl #defines `weak`).
+#define POLKAVM_IMPORT_WEAK(arg_return_ty, fn_name, ...) \
+static struct PolkaVM_Metadata POLKAVM_JOIN(fn_name, __IMPORT_METADATA) __attribute__ ((section(".polkavm_metadata"))) = { \
+    1, 0, sizeof(#fn_name) - 1, #fn_name, POLKAVM_COUNT_REGS(__VA_ARGS__), POLKAVM_COUNT_REGS(arg_return_ty) \
+}; \
+arg_return_ty __attribute__ ((naked, __weak__)) fn_name(POLKAVM_IMPORT_ARGS_IMPL(__VA_ARGS__)) { \
+    __asm__( \
+        POLKAVM_IMPORT_DEF() \
+        "ret\n" \
+        : \
+        : \
+          [metadata] "i" (&POLKAVM_JOIN(fn_name, __IMPORT_METADATA)) \
+        : "memory" \
+    ); \
+}
+
 #define POLKAVM_IMPORT_WITH_INDEX(index, arg_return_ty, fn_name, ...) \
 static struct PolkaVM_Metadata_V2 POLKAVM_JOIN(fn_name, __IMPORT_METADATA) __attribute__ ((section(".polkavm_metadata"))) = { \
     2, 0, sizeof(#fn_name) - 1, #fn_name, POLKAVM_COUNT_REGS(__VA_ARGS__), POLKAVM_COUNT_REGS(arg_return_ty), 1, index \

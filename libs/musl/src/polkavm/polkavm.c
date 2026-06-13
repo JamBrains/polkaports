@@ -2,13 +2,17 @@
 #include "locale_impl.h"
 #include "pthread_impl.h"
 #include "pthread_arch.h"
+#include "polkavm_guest.h"
+
+// Weak default, overridden by a strong pvm_syscall if the program provides one.
+POLKAVM_IMPORT_WEAK(long, pvm_syscall, long, long, long, long, long, long, long)
 
 long _syscall_polkavm(long n, long a, long b, long c, long d, long e, long f)
 {
     return pvm_syscall(n, a, b, c, d, e, f);
 }
 
-static uintptr_t dtv[1] = { 0 };
+static uintptr_t dtv = 0;
 
 static struct pthread tls = {
     .tid = 1,

@@ -4,17 +4,26 @@ set -ex
 
 linux_tag=v6.15
 linux_url=https://github.com/torvalds/linux
-libunwind_tag=v1.8.2
-libunwind_url=https://github.com/libunwind/libunwind
 picoalloc_tag=v5.2.0
 picoalloc_url=https://github.com/koute/picoalloc
-polkatool_version=0.29.0
+polkatool_version=0.34.0
+jam_program_blob_version=0.1.28
+llvm_tag=llvmorg-22.1.0
+llvm_url=https://github.com/llvm/llvm-project
 
-CC="${CC:-clang}"
-CXX="${CXX:-clang++}"
-LLD="${LLD:-lld}"
-AR="${AR:-llvm-ar}"
-RANLIB="${RANLIB:-llvm-ranlib}"
+CC=clang
+CXX=clang++
+LLD=lld
+AR=llvm-ar
+RANLIB=llvm-ranlib
+
+riscv_cflags="--target=riscv64-unknown-none-elf -march=rv64emac_zbb_xtheadcondmov -mabi=lp64e -fpic -fPIE -mrelax"
+riscv_ldflags="-Wl,--emit-relocs -Wl,--no-relax"
+
+# Flags that improve reproducibility.
+repro_cflags="-g0 -fno-ident"
+repro_cxxflags="$repro_cflags"
+repro_rustflags="-C debuginfo=0"
 
 run() {
 	set +e
@@ -32,38 +41,37 @@ cleanup() {
 }
 
 polkatool_install() {
-	cargo install --quiet --root "$sysroot" polkatool@$polkatool_version
+	env RUSTFLAGS="$repro_rustflags" \
+		cargo install --quiet --root "$sysroot" "$@" polkatool@$polkatool_version --locked
 }
 
 jam_program_blob_install() {
-	cargo install --quiet --root "$sysroot" jam-program-blob
+	env RUSTFLAGS="$repro_rustflags" \
+		cargo install --quiet --root "$sysroot" "$@" jam-program-blob@$jam_program_blob_version --locked
 }
 
 picoalloc_build() {
-	suffix="$1"
-	shift
-	if ! test -d "$workdir"/picoalloc; then
-		git clone --depth=1 --branch="$picoalloc_tag" --quiet "$picoalloc_url" "$workdir"/picoalloc
-	fi
+	git clone --depth=1 --branch="$picoalloc_tag" --quiet "$picoalloc_url" "$workdir"/picoalloc
 	cd "$workdir"/picoalloc
 	rm -rf target
-    target_json="$("$sysroot"/bin/polkatool get-target-json-path)"
-	RUSTC_BOOTSTRAP=1 cargo build \
+	target_json="$("$sysroot"/bin/polkatool get-target-json-path)"
+	RUSTC_BOOTSTRAP=1 RUSTFLAGS="$repro_rustflags" \
+		cargo build \
 		-Zbuild-std=core,alloc \
 		--quiet \
 		--package picoalloc_native \
 		--release \
 		--target="$target_json" \
-		"$@"
+		--features corevm
 	mv -v target/riscv64emac-unknown-none-polkavm/release/libpicoalloc_native.a \
-		libpicoalloc_native"$suffix".a
+		libpicoalloc_native.a
 }
 
 musl_build() {
 	cd "$root"/libs/musl
 	mkdir -p src/malloc/mallocng
 	run env \
-		CFLAGS="-Wno-shift-op-parentheses -Wno-unused-command-line-argument -fpic -fPIE -mrelax --target=riscv64-unknown-none-elf -march=rv64emac_zbb_xtheadcondmov -mabi=lp64e -ggdb" \
+		CFLAGS="$riscv_cflags -O3 $repro_cflags -ffile-prefix-map=$PWD=musl" \
 		CC="$CC" \
 		CXX="$CXX" \
 		LD="$LLD" \
@@ -75,11 +83,11 @@ musl_build() {
 		OBJDUMP="$OBJDUMP" \
 		OBJCOPY="$OBJCOPY" \
 		LIBCC="$PWD"/libclang_rt.builtins-riscv64.a \
-		LDFLAGS="-Wl,--emit-relocs -Wl,--no-relax" \
+		LDFLAGS="$riscv_ldflags" \
 		./configure \
 		--prefix="$sysroot" \
 		--target=riscv64 \
-		--enable-wrapper=clang-20 \
+		--disable-wrapper \
 		--disable-shared
 	run make clean
 	run make -j4
@@ -88,10 +96,7 @@ musl_build() {
 
 musl_install() {
 	# Install CoreVM-specific headers.
-	case "$suffix" in
-	polkavm) ;;
-	corevm) ln -f "$root"/sdk/corevm_guest.h "$sysroot"/include/ ;;
-	esac
+	ln -f "$root"/sdk/corevm_guest.h "$sysroot"/include/
 	cp "$root"/libs/musl/arch/riscv64/polkavm_guest.h "$sysroot"/include/
 
 	mkdir -p "$sysroot"/lib
@@ -102,121 +107,204 @@ musl_install() {
 	rm -rf "$workdir"/repack
 	mkdir -p "$workdir"/repack
 	cd "$workdir"/repack
-	"$AR" x "$workdir"/picoalloc/libpicoalloc_native"$suffix".a
+	"$AR" x "$workdir"/picoalloc/libpicoalloc_native.a
 	cp "$root"/libs/musl/lib/libc.a .
 	"$AR" r libc.a picoalloc*.o
 	# Overwrite libc.a in the sysroot
 	cp libc.a "$sysroot"/lib
 
-	for another_suffix in "" -riscv64; do
+	for suffix in "" -riscv64; do
 		ln -f \
 			"$root"/libs/musl/libclang_rt.builtins-riscv64.a \
-			"$sysroot"/lib/libclang_rt.builtins"$another_suffix".a
+			"$sysroot"/lib/libclang_rt.builtins"$suffix".a
 	done
-}
-
-libunwind_install() {
-	rm -rf "$workdir"/libunwind
-	git clone --depth=1 --branch="$libunwind_tag" --quiet "$libunwind_url" "$workdir"/libunwind
-	cp "$root"/sdk/stdatomic.h "$sysroot"/include
-	cd "$workdir"/libunwind
-	autoreconf -vif
-	# Disable floating point registers.
-	sed -i -e '/.*error.*Unsupported RISC-V floating-point length.*/d' src/riscv/asm.h
-	sed -i -e 's/.*error.*Unsupported RISC-V floating-point size.*/typedef struct {} unw_tdep_fpreg_t;/' include/libunwind-riscv.h
-	sed -i -e 's/.*error.*FIXME.*/return 0;/' include/tdep-riscv/libunwind_i.h
-	sed -i -e '/.*fpval.*=.*/d' src/riscv/Ginit.c
-	sed -i -e 's/.*error.*Unsupported RISC-V floating point ABI.*/#define JB_MASK_SAVED (208>>3)\n#define JB_MASK (216>>3)/' include/tdep-riscv/jmpbuf.h
-	# Disable s2-s11 registers.
-	for i in 2 3 4 5 6 7 8 9 10 11; do
-		sed -i -e "/.*STORE s$i,.*/d" src/riscv/getcontext.S
-		sed -i -e "/.*LOAD s$i,.*/d" src/riscv/setcontext.S
-	done
-	# Disable a6-a7 registers.
-	for i in 6 7; do
-		sed -i -e "/.*STORE a$i,.*/d" src/riscv/getcontext.S
-		sed -i -e "/.*LOAD a$i,.*/d" src/riscv/setcontext.S
-	done
-	run env CC="$sysroot"/bin/polkavm-cc \
-		LLD="$sysroot"/bin/polkavm-cc \
-		CPPFLAGS="-D__linux__" \
-		./configure \
-		--prefix="$sysroot" \
-		--disable-shared \
-		--disable-tests \
-		--disable-coredump \
-		--disable-ptrace \
-		--disable-nto \
-		--disable-setjmp \
-		--host riscv64-pc-linux-musl
-	run make -j4
-	run make install
-	cd "$root"
 }
 
 linux_install() {
-	if ! test -d "$workdir"/linux; then
-		git clone --depth=1 --branch="$linux_tag" "$linux_url" "$workdir"/linux
-	fi
+	git clone --depth=1 --branch="$linux_tag" "$linux_url" "$workdir"/linux
 	cd "$workdir"/linux
-	run make headers_install ARCH=riscv CONFIG_ARCH_RV64I=y INSTALL_HDR_PATH="$sysroot"
+	# Put the sysroot's GNU sed forwarder (see setup_sed) ahead of the BSD
+	# sed on macOS, which the kernel's headers_install.sh can't use.
+	run env PATH="$sysroot/bin:$PATH" \
+		make headers_install ARCH=riscv CONFIG_ARCH_RV64I=y INSTALL_HDR_PATH="$sysroot"
 	cd "$root"
 }
 
 sysroot_init() {
 	rm -rf "$sysroot"/bin
 	mkdir -p "$sysroot"/bin
-	cat >"$sysroot"/bin/polkavm-cc <<EOF
+	export COREVM_SYSROOT="$sysroot"
+	cat >"$sysroot"/bin/polkavm-cc <<'EOF'
 #!/bin/sh
 suffix=
-for x in "\$@"; do
-	case "\$x" in
+for x in "$@"; do
+	case "$x" in
 	-nostdlib) suffix=-nostdlib ;;
 	*) ;;
 	esac
 done
-exec "$CC" --config=$sysroot/clang\$suffix.cfg "\$@"
+exec "${COREVM_CC:-clang}" --config="$COREVM_SYSROOT"/clang$suffix.cfg "$@"
 EOF
 	chmod +x "$sysroot"/bin/polkavm-cc
-	cat >"$sysroot"/bin/polkavm-c++ <<EOF
+	cat >"$sysroot"/bin/polkavm-c++ <<'EOF'
 #!/bin/sh
 suffix=
-for x in "\$@"; do
-	case "\$x" in
+for x in "$@"; do
+	case "$x" in
 	-nostdlib) suffix=-nostdlib ;;
 	*) ;;
 	esac
 done
-exec "$CXX" --config=$sysroot/clang\$suffix.cfg "\$@"
+exec "${COREVM_CXX:-clang++}" --config="$COREVM_SYSROOT"/clang++$suffix.cfg "$@"
 EOF
 	chmod +x "$sysroot"/bin/polkavm-c++
-	cat >"$sysroot"/bin/polkavm-lld <<EOF
+	cat >"$sysroot"/bin/polkavm-lld <<'EOF'
 #!/bin/sh
-exec "$LLD" "\$@" --sysroot="$sysroot" -L$sysroot/lib \
-	$sysroot/lib/Scrt1.o \
-	$sysroot/lib/crti.o \
-	$sysroot/lib/crtn.o
+exec "${COREVM_LLD:-lld}" "$@" \
+    --sysroot="$COREVM_SYSROOT" \
+    -L"$COREVM_SYSROOT"/lib \
+    "$COREVM_SYSROOT"/lib/Scrt1.o \
+    "$COREVM_SYSROOT"/lib/crti.o \
+    "$COREVM_SYSROOT"/lib/crtn.o
 EOF
 	chmod +x "$sysroot"/bin/polkavm-lld
 	ln -f "$root"/sdk/clang.cfg "$sysroot"/
 	ln -f "$root"/sdk/clang-nostdlib.cfg "$sysroot"/
-	sed -e "s|@VENDOR@|$suffix|g" \
-		<"$root"/sdk/riscv64emac-template-linux-musl.json \
-		>"$sysroot"/riscv64emac-"$suffix"-linux-musl.json
+	ln -f "$root"/sdk/clang++.cfg "$sysroot"/
+	ln -f "$root"/sdk/clang++-nostdlib.cfg "$sysroot"/
+	ln -f "$root"/sdk/riscv64emac-corevm-linux-musl.json "$sysroot"/
 	# clang-18 and clang-19 on Ubuntu want libgcc
 	# clang-20 on Fedora wants libgcc_s
 	# busybox wants libgcc_eh
+	# rust wants libunwind
 	mkdir -p "$sysroot"/lib
-	for name in libgcc_s libgcc libgcc_eh; do
+	for name in libgcc_s libgcc libgcc_eh libunwind; do
 		touch "$sysroot"/lib/"$name".a
 	done
+	# CMake cross-compilation configuration.
+	cat >"$sysroot"/toolchain.cmake <<'EOF'
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_C_COMPILER $ENV{COREVM_SYSROOT}/bin/polkavm-cc)
+set(CMAKE_CXX_COMPILER $ENV{COREVM_SYSROOT}/bin/polkavm-c++)
+set(CMAKE_FIND_ROOT_PATH $ENV{COREVM_SYSROOT})
+set(CMAKE_SYSROOT $ENV{COREVM_SYSROOT})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# This is a hack to make cmake cross-compilation work on MacOS.
+set(CMAKE_C_COMPILER_WORKS 1)
+set(CMAKE_CXX_COMPILER_WORKS 1)
+EOF
+}
+
+setup_sed() {
+	# macOS ships BSD sed, but the Linux headers install relies on GNU sed
+	# extensions. Forward `sed` to GNU sed through the sysroot bin, the same
+	# way we forward the compiler and linker.
+	if sed --version >/dev/null 2>&1; then
+		gnu_sed="$(command -v sed)"
+	elif command -v gsed >/dev/null 2>&1; then
+		gnu_sed="$(command -v gsed)"
+	else
+		echo "error: GNU sed is required. On macOS install it with: brew install gnu-sed" >&2
+		return 1
+	fi
+	cat >"$sysroot"/bin/sed <<EOF
+#!/bin/sh
+exec "\${COREVM_SED:-$gnu_sed}" "\$@"
+EOF
+	chmod +x "$sysroot"/bin/sed
+}
+
+libcxx_install() {
+	# Custom config just for libcxx.
+	cat >"$workdir"/libcxx.cmake <<EOF
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_C_COMPILER $CC)
+set(CMAKE_CXX_COMPILER $CXX)
+set(CMAKE_FIND_ROOT_PATH $sysroot)
+set(CMAKE_SYSROOT $sysroot)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+# This is a hack to make cmake cross-compilation work on MacOS.
+set(CMAKE_C_COMPILER_WORKS 1)
+set(CMAKE_CXX_COMPILER_WORKS 1)
+EOF
+	git clone --depth=1 --branch="$llvm_tag" "$llvm_url" "$workdir"/llvm
+	# Configure libcxx first.
+	cd "$workdir"/llvm/libcxx
+	# Fix script permissions.
+	chmod +x utils/generate_iwyu_mapping.py
+	# Remove existing headers from the sysroot.
+	rm -rf $sysroot/include/c++
+	rm -rf build
+	mkdir build
+	cd build
+	run env \
+		CXXFLAGS="$riscv_cflags --sysroot=$sysroot -I$sysroot/include/c++/v1 -D_GNU_SOURCE -O3 $repro_cxxflags -ffile-prefix-map=$workdir/llvm/libcxx=libcxx" \
+		LDFLAGS="$riscv_ldflags -nostdlib" \
+		cmake \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX="$sysroot" \
+		-DCMAKE_TOOLCHAIN_FILE="$workdir"/libcxx.cmake \
+		-DLIBCXX_ENABLE_STATIC=1 \
+		-DLIBCXX_ENABLE_SHARED=0 \
+		-DLIBCXX_ENABLE_EXCEPTIONS=0 \
+		-DLIBCXX_ENABLE_RTTI=1 \
+		-DLIBCXX_INCLUDE_TESTS=0 \
+		-DLIBCXX_ENABLE_RANDOM_DEVICE=0 \
+		-DLIBCXX_HAS_TERMINAL_AVAILABLE=0 \
+		-DLIBCXX_ENABLE_THREADS=0 \
+		-DLIBCXX_ENABLE_MONOTONIC_CLOCK=0 \
+		-DLIBCXX_ENABLE_TIME_ZONE_DATABASE=0 \
+		-DLIBCXX_INCLUDE_BENCHMARKS=0 \
+		-DLIBCXX_INCLUDE_DOCS=0 \
+		-DLIBCXX_USE_COMPILER_RT=1 \
+		-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=1 \
+		-DLIBCXX_HAS_MUSL_LIBC=1 \
+		..
+	# Configure libcxxabi.
+	cd "$workdir"/llvm/libcxxabi
+	rm -rf build
+	mkdir build
+	cd build
+	run env \
+		CXXFLAGS="$riscv_cflags -I$workdir/llvm/libcxx/build/include/c++/v1 -I$workdir/llvm/libcxx/include -D_GNU_SOURCE -O3 $repro_cxxflags -ffile-prefix-map=$workdir/llvm/libcxxabi=libcxxabi" \
+		LDFLAGS="$riscv_ldflags -nostdlib" \
+		cmake \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX="$sysroot" \
+		-DCMAKE_VERBOSE_MAKEFILE=1 \
+		-DCMAKE_TOOLCHAIN_FILE="$workdir"/libcxx.cmake \
+		-DLIBCXXABI_ENABLE_EXCEPTIONS=0 \
+		-DLIBCXXABI_USE_LLVM_UNWINDER=0 \
+		-DLIBCXXABI_ENABLE_STATIC_UNWINDER=1 \
+		-DLIBCXXABI_USE_COMPILER_RT=1 \
+		-DLIBCXXABI_ENABLE_THREADS=0 \
+		-DLIBCXXABI_HAS_PTHREAD_API=0 \
+		-DLIBCXXABI_INCLUDE_TESTS=0 \
+		-DLIBCXXABI_ENABLE_SHARED=0 \
+		-DLIBCXXABI_ENABLE_STATIC=1 \
+		-DLIBCXXABI_SILENT_TERMINATE=1 \
+		..
+	# Build libcxxabi.
+	run make -j
+	run make install
+	# Build libcxx.
+	cd "$workdir"/llvm/libcxx/build
+	run make -j
+	# Run the script manually (cmake doesn't run it for some reason).
+	../utils/generate_iwyu_mapping.py -o include/c++/v1/libcxx.imp
+	run make install
+	cd "$root"
 }
 
 run_single() {
 	case "$1" in
 	musl)
-		suffix=corevm
-		sysroot="$root"/sysroot-"$suffix"
+		sysroot="$root"/sysroot
+		picoalloc_build
 		musl_build
 		musl_install
 		;;
@@ -236,28 +324,29 @@ main() {
 		run_single "$1"
 		exit 0
 	fi
-	for suffix in polkavm; do
-		sysroot="$root"/sysroot-"$suffix"
-		sysroot_init
+	sysroot="$root"/sysroot
+	sysroot_init
+	setup_sed
+	if test -n "$TOOLS_RUST_TARGET"; then
+		polkatool_install --target "$TOOLS_RUST_TARGET"
+		jam_program_blob_install --target "$TOOLS_RUST_TARGET"
+	else
 		polkatool_install
 		jam_program_blob_install
-		case "$suffix" in
-		polkavm) picoalloc_build polkavm ;;
-		corevm) picoalloc_build corevm --features corevm ;;
-		esac
-		musl_build
-		musl_install
-		#linux_install
-		#libunwind_install
-	done
+	fi
+	picoalloc_build
+	musl_build
+	musl_install
+	linux_install
+	#libcxx_install
+	rm -rf "$sysroot"/share/man
 	cat <<'EOF'
 
 Setup finished!
 
-Type one of the following commands to activate the toolchain.
+Type the following command to activate the toolchain.
 
-    . ./activate.sh corevm
-    . ./activate.sh polkavm
+    . ./activate.sh
 
 EOF
 }
